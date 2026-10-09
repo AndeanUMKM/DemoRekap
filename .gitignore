@@ -1,0 +1,33 @@
+# Python & Virtual Environments
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# Local Data Storage & Temporary Databases
+data_storage/
+*.xlsx
+!templates/*.xlsx
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor Configs
+.idea/
+.vscode/
+*.swp
+*.swo
