@@ -209,7 +209,16 @@ def main_dashboard():
                 st.warning("Silakan tempel teks chat pesanan terlebih dahulu.")
             else:
                 with st.spinner("🤖 Sedang membaca & mengekstrak pesanan..."):
-                    extracted_list = parse_order_chat(chat_input, contoh_format=tenant.contoh_format_po)
+                    extracted_raw = parse_order_chat(chat_input, contoh_format=tenant.contoh_format_po)
+                    if isinstance(extracted_raw, list):
+                        extracted_list = extracted_raw
+                    elif isinstance(extracted_raw, OrderRecord):
+                        extracted_list = [extracted_raw]
+                    elif extracted_raw:
+                        extracted_list = [extracted_raw]
+                    else:
+                        extracted_list = []
+
                     st.session_state.extracted_orders = extracted_list
                     if extracted_list:
                         st.success(f"🎯 Berhasil mendeteksi **{len(extracted_list)} pesanan**!")
