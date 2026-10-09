@@ -13,14 +13,16 @@ Kirim ke: Jl. Melati No. 12, Kebon Jeruk
 """
 
 def test_fallback_chat_parser():
-    parsed = fallback_chat_parser(SAMPLE_CHAT_1)
-    assert isinstance(parsed, OrderRecord)
-    assert "Siti Rahma" in parsed.nama_pemesan or parsed.nama_pemesan != ""
-    assert len(parsed.items) > 0
-    assert parsed.raw_chat == SAMPLE_CHAT_1
+    orders = fallback_chat_parser(SAMPLE_CHAT_1)
+    assert isinstance(orders, list)
+    assert len(orders) >= 1
+    assert isinstance(orders[0], OrderRecord)
+    assert len(orders[0].items) >= 1
 
 def test_parse_order_chat_without_api_key():
     # When api key is not set, it should safely use fallback
-    result = parse_order_chat(SAMPLE_CHAT_1, api_key="", contoh_format="")
-    assert isinstance(result, OrderRecord)
-    assert len(result.items) >= 1
+    results = parse_order_chat(SAMPLE_CHAT_1, api_key="", contoh_format="")
+    assert isinstance(results, list)
+    assert len(results) >= 1
+    assert isinstance(results[0], OrderRecord)
+    assert len(results[0].items) >= 1

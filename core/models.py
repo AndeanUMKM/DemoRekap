@@ -21,10 +21,13 @@ class OrderRecord(BaseModel):
     status_pesanan: str = Field(default="Baru", description="Status PO: Baru, Diproses, Dikirim, Selesai, Dibatalkan")
     raw_chat: str = Field(default="", description="Isi teks chat asli yang di-copy-paste")
 
+class BatchOrderExtraction(BaseModel):
+    pesanan_list: List[OrderRecord] = Field(default_factory=list, description="Daftar seluruh pesanan PO yang ditemukan di dalam teks chat")
+
 class TenantProfile(BaseModel):
     tenant_id: str = Field(description="Slug unik tenant (misal: toko_berkah)")
     nama_toko: str = Field(description="Nama resmi toko / UMKM")
-    telegram_user_id: int = Field(description="ID Akun Telegram pemilik")
+    telegram_user_id: int = Field(default=0, description="ID Akun Telegram pemilik jika ada")
     username: str = Field(description="Username untuk login web dashboard")
     password_hash: str = Field(description="Hash password untuk login web")
     contoh_format_po: str = Field(default="", description="Contoh format teks chat PO yang biasa digunakan pembeli")

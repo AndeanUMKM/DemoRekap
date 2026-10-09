@@ -2,8 +2,8 @@ import re
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
-from core.models import OrderRecord, OrderItem
+from typing import Optional, List
+from core.models import OrderRecord, OrderItem, BatchOrderExtraction
 from config import config
 
 def generate_order_id() -> str:
@@ -12,108 +12,226 @@ def generate_order_id() -> str:
     unique_suffix = uuid.uuid4().hex[:4].upper()
     return f"PO-{date_str}-{unique_suffix}"
 
-def fallback_chat_parser(chat_text: str) -> OrderRecord:
-    """Heuristic / Regex fallback parser for Indonesian WhatsApp order messages."""
-    lines = [line.strip() for line in chat_text.splitlines() if line.strip()]
-    nama = "Pelanggan (Tanpa Nama)"
-    no_hp = ""
-    alamat = ""
-    items = []
-    total_harga = 0.0
+def clean_phone_number(text: str) -> str:
+    """Extract and normalize Indonesian phone numbers."""
+    matches = re.findall(r"(\+?62[\s\-0-9]{8,15}|08[\s\-0-9]{8,15})", text)
+    if matches:
+        clean = re.sub(r"[\s\-]", "", matches[0])
+        return clean
+    return ""
 
-    # Extract common Indonesian PO patterns
+def extract_price(text: str) -> float:
+    """Extract explicit price from formatted string, e.g. (55.000), Rp 55.000, 55rb, 55k"""
+    # 1. Match prices inside parentheses: (55.000) or (Rp 55.000) or (55k)
+    match_paren = re.search(r"\((?:rp\.?\s*)?([\d\.]+)\s*(rb|k)?\)", text, flags=re.IGNORECASE)
+    if match_paren:
+        raw_num = match_paren.group(1).replace(".", "")
+        if raw_num.isdigit():
+            val = float(raw_num)
+            if match_paren.group(2) or (val < 1000 and len(raw_num) <= 3):
+                val *= 1000
+            return val
+
+    # 2. Match prices with explicit Rp: Rp 55.000 or Rp55.000
+    match_rp = re.search(r"rp\.?\s*([\d\.]+)\s*(rb|k)?", text, flags=re.IGNORECASE)
+    if match_rp:
+        raw_num = match_rp.group(1).replace(".", "")
+        if raw_num.isdigit():
+            val = float(raw_num)
+            if match_rp.group(2) or (val < 1000 and len(raw_num) <= 3):
+                val *= 1000
+            return val
+
+    return 0.0
+
+def parse_single_order_block(block_text: str) -> Optional[OrderRecord]:
+    """Extract a single order block into an OrderRecord."""
+    lines = [l.strip() for l in block_text.splitlines() if l.strip()]
+    if not lines:
+        return None
+
+    nama = ""
+    no_hp = ""
+    alamat_lines = []
+    items: List[OrderItem] = []
+    is_collecting_items = False
+    is_collecting_address = False
+
     for line in lines:
         line_lower = line.lower()
-        # Extract name
-        if any(key in line_lower for key in ["nama:", "nama pemesan:", "an:", "a/n:", "atas nama:"]):
-            parts = re.split(r":|an\s|a/n\s", line, flags=re.IGNORECASE)
-            if len(parts) > 1 and parts[-1].strip():
-                nama = parts[-1].strip()
-        # Extract phone
-        elif any(key in line_lower for key in ["no hp:", "wa:", "telepon:", "no:"]):
-            nums = re.findall(r"(\+?62\d+|08\d+)", line)
-            if nums:
-                no_hp = nums[0]
-        # Extract address
-        elif any(key in line_lower for key in ["alamat:", "kirim ke:", "tujuan:", "lokasi:"]):
-            parts = re.split(r":|kirim ke", line, flags=re.IGNORECASE)
-            if len(parts) > 1 and parts[-1].strip():
-                alamat = parts[-1].strip()
-        # Extract items (lines with numbers or bullet points)
-        elif line.startswith(("-", "*", "•")) or re.search(r"\d+\s*(pcs|porsi|box|biji|bungkus|buah|pack|kg|gr|x)", line_lower):
-            clean_item = re.sub(r"^[-*•]\s*", "", line)
-            # detect qty
-            qty_match = re.search(r"(\d+)\s*(pcs|porsi|box|biji|bungkus|buah|pack|kg|gr|x)?", clean_item, flags=re.IGNORECASE)
-            qty = int(qty_match.group(1)) if qty_match else 1
-            item_name = re.sub(r"(\d+)\s*(pcs|porsi|box|biji|bungkus|buah|pack|kg|gr|x)?", "", clean_item, flags=re.IGNORECASE).strip()
-            if not item_name:
-                item_name = clean_item
-            items.append(OrderItem(nama_item=item_name, qty=qty, harga_satuan=0.0, subtotal=0.0))
 
-    if not items:
-        # Default fallback item from main text
-        items.append(OrderItem(nama_item="Pesanan Chat", qty=1, harga_satuan=0.0, subtotal=0.0))
+        # Ignore broadcast or generic tags
+        if any(term in line_lower for term in ["pilih pengiriman", "pengiriman tiap", "batch", "last order", "ready stock", "kurir instan", "paxel", "ncs", "isi format order", "berminat bisa"]):
+            continue
+
+        # Check for Name header
+        if re.search(r"^(?:nama|an|a/n|nama penerima|nama pemesan)\s*[:=]", line_lower):
+            parts = re.split(r"[:=]", line, maxsplit=1)
+            if len(parts) > 1:
+                nama = parts[1].strip()
+            is_collecting_items = False
+            is_collecting_address = False
+            continue
+
+        # Check for Phone header
+        if re.search(r"^(?:no\s*tlp|no\s*hp|wa|telepon|nohp|telp|kontak)\s*[:=]", line_lower):
+            no_hp = clean_phone_number(line)
+            is_collecting_items = False
+            is_collecting_address = False
+            continue
+
+        # Standalone phone number on its own line
+        phone_match = clean_phone_number(line)
+        if phone_match and len(line) <= 25 and not line.startswith(("-", "*", "•")):
+            no_hp = phone_match
+            continue
+
+        # Check for Address header
+        if re.search(r"^(?:alamat|alamat lengkap|kirim ke|lokasi|tujuan)\s*[:=]", line_lower):
+            parts = re.split(r"[:=]", line, maxsplit=1)
+            if len(parts) > 1 and parts[1].strip():
+                alamat_lines.append(parts[1].strip())
+            is_collecting_address = True
+            is_collecting_items = False
+            continue
+
+        # Check for Order Items header
+        if re.search(r"^(?:orderan|pesanan|order|list order|items?)\s*[:=]", line_lower):
+            is_collecting_items = True
+            is_collecting_address = False
+            continue
+
+        # Process item lines
+        if is_collecting_items or line.startswith(("-", "*", "•")) or re.search(r"^\d+\.\s+", line):
+            clean_line = re.sub(r"^[-*•\d\.]+\s*", "", line).strip()
+            if not clean_line or len(clean_line) < 3 or clean_line.lower().startswith("fo "):
+                continue
+
+            # Extract price if present
+            price = extract_price(clean_line)
+            
+            # Remove price brackets from text
+            clean_no_price = re.sub(r"\((?:rp\.?\s*)?[\d\.]+\s*(?:rb|k)?\)", "", clean_line, flags=re.IGNORECASE)
+            clean_no_price = re.sub(r"rp\.?\s*[\d\.]+\s*(?:rb|k)?", "", clean_no_price, flags=re.IGNORECASE).strip()
+
+            # Extract quantity (e.g. "ayam kampung lengkuas 2" or "ay kp songkem - 1" or "lele (5 ekor) 1")
+            qty = 1
+            qty_match = re.search(r"(?:^|\s*-\s*|\s+)(\d+)\s*(?:pcs|porsi|box|bungkus|buah|pack|kg|gr|x)?$", clean_no_price, flags=re.IGNORECASE)
+            item_name = clean_no_price
+            if qty_match:
+                qty = int(qty_match.group(1))
+                item_name = clean_no_price[:qty_match.start()].strip(" -:")
+
+            if item_name:
+                subtotal = price * qty if price > 0 else 0.0
+                items.append(OrderItem(nama_item=item_name, qty=qty, harga_satuan=price, subtotal=subtotal))
+            continue
+
+        # Address continuation
+        if is_collecting_address:
+            # If not an item or tag
+            if not line.startswith(("-", "*", "•")) and not re.search(r"^(?:orderan|pesanan|fo\b)", line_lower):
+                alamat_lines.append(line)
+
+    if not nama and not items and not no_hp:
+        return None
+
+    alamat = ", ".join(alamat_lines)
+    total_harga = sum(it.subtotal for it in items)
 
     return OrderRecord(
         id_pesanan=generate_order_id(),
         tanggal_masuk=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        nama_pemesan=nama,
+        nama_pemesan=nama or "Pelanggan",
         no_hp=no_hp,
         alamat_pengiriman=alamat,
-        items=items,
+        items=items if items else [OrderItem(nama_item="Pesanan PO", qty=1, harga_satuan=0.0, subtotal=0.0)],
         total_harga=total_harga,
         status_pesanan="Baru",
-        raw_chat=chat_text
+        raw_chat=block_text
     )
 
-def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_format: str = "") -> OrderRecord:
-    """Parse raw chat text into an OrderRecord using Gemini AI with fallback to regex heuristics."""
+def fallback_chat_parser(chat_text: str) -> List[OrderRecord]:
+    """Smart Heuristic / Regex parser that segments multiple orders and removes broadcast junk."""
+    # Split blocks by order markers
+    order_marker_pattern = r"(?=(?:^|\n)(?:\*?FO\s+[A-Za-z0-9]+\*?|\*?Format Order|\*?Nama\s*[:=]|\*?Nama penerima\s*[:=]))"
+    raw_blocks = re.split(order_marker_pattern, chat_text, flags=re.IGNORECASE)
+
+    orders: List[OrderRecord] = []
+    for block in raw_blocks:
+        if not block.strip():
+            continue
+        parsed = parse_single_order_block(block)
+        if parsed and (parsed.nama_pemesan != "Pelanggan" or (len(parsed.items) > 0 and parsed.items[0].nama_item != "Pesanan PO")):
+            orders.append(parsed)
+
+    # If no segmented orders, try parsing whole text
+    if not orders:
+        single = parse_single_order_block(chat_text)
+        if single:
+            orders.append(single)
+
+    return orders
+
+def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_format: str = "") -> List[OrderRecord]:
+    """Parse raw chat text into a list of OrderRecord using Gemini AI with fallback to regex heuristics."""
     active_key = api_key or config.GEMINI_API_KEY
 
-    if not active_key:
-        return fallback_chat_parser(chat_text)
+    if active_key:
+        try:
+            from google import genai
+            from google.genai import types
 
-    try:
-        # Attempt Gemini 1.5/2.0 API call
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=active_key)
-        
-        system_instruction = (
-            "Kamu adalah asisten AI ekstraktor pesanan PO (Pre-Order) untuk UMKM Indonesia.\n"
-            "Tugasmu adalah membaca teks chat WhatsApp pesanan dari pembeli dan mengekstraknya "
-            "menjadi format JSON terstruktur yang valid.\n"
-            "Pastikan kamu mengekstrak: nama_pemesan, no_hp, alamat_pengiriman, daftar items (nama_item, qty, harga_satuan, subtotal), total_harga, catatan.\n"
-            "Jika informasi nama tidak ditemukan, gunakan 'Pelanggan'. Jika harga tidak tertera, isi 0."
-        )
-
-        prompt = f"Teks Chat Masuk:\n\"\"\"\n{chat_text}\n\"\"\"\n"
-        if contoh_format:
-            prompt += f"\nContoh Format Toko Ini Sebagai Referensi:\n\"\"\"\n{contoh_format}\n\"\"\"\n"
-
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                response_schema=OrderRecord,
-                temperature=0.1,
+            client = genai.Client(api_key=active_key)
+            
+            system_instruction = (
+                "Kamu adalah asisten AI ekstraktor pesanan Pre-Order (PO) untuk UMKM Indonesia.\n"
+                "Tugasmu adalah membaca teks chat WhatsApp pesanan dari pembeli (yang bisa berisi 1 atau LEBIH DARI 1 pesanan pembeli sekaligus) "
+                "dan mengekstrak SELURUH pesanan pembeli menjadi daftar terstruktur (pesanan_list).\n"
+                "PENTING:\n"
+                "- Abaikan pengumuman broadcast toko, jadwal PO (misal: 'PO TANGERANG BATCH 2', 'last order...', 'Pilih pengiriman...').\n"
+                "- Ekstrak setiap pemesan secara terpisah: nama_pemesan, no_hp (format nomor bersih), alamat_pengiriman (gabungkan catatan patokan alamat), "
+                "daftar items (nama_item, qty, harga_satuan, subtotal), total_harga.\n"
+                "- Jika harga satuan tertera (misal: 55.000 atau (55.000)), hitung subtotal dan total_harga.\n"
+                "- Kembalikan output JSON sesuai dengan skema BatchOrderExtraction."
             )
-        )
 
-        if response and response.text:
-            data = json.loads(response.text)
-            if not data.get("id_pesanan"):
-                data["id_pesanan"] = generate_order_id()
-            if not data.get("tanggal_masuk"):
-                data["tanggal_masuk"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            data["raw_chat"] = chat_text
-            return OrderRecord(**data)
+            prompt = f"Teks Chat Masuk dari WhatsApp:\n\"\"\"\n{chat_text}\n\"\"\"\n"
+            if contoh_format:
+                prompt += f"\nContoh Format Toko Sebagai Referensi:\n\"\"\"\n{contoh_format}\n\"\"\"\n"
 
-    except Exception as e:
-        # Fallback to local heuristic parser if API call fails or library unavailable
-        pass
+            # Try modern models
+            models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+            for model_name in models_to_try:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            response_mime_type="application/json",
+                            response_schema=BatchOrderExtraction,
+                            temperature=0.1,
+                        )
+                    )
+                    if response and response.text:
+                        data = json.loads(response.text)
+                        pesanan_list = data.get("pesanan_list", [])
+                        results = []
+                        for p in pesanan_list:
+                            if not p.get("id_pesanan"):
+                                p["id_pesanan"] = generate_order_id()
+                            if not p.get("tanggal_masuk"):
+                                p["tanggal_masuk"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            p["raw_chat"] = chat_text
+                            results.append(OrderRecord(**p))
+                        if results:
+                            return results
+                except Exception:
+                    continue
 
+        except Exception:
+            pass
+
+    # High-accuracy heuristic fallback
     return fallback_chat_parser(chat_text)

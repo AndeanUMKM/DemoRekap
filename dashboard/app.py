@@ -20,7 +20,7 @@ from config import config
 
 # Page Configuration
 st.set_page_config(
-    page_title="Rekap PO UMKM - Auto AI Extractor",
+    page_title="Rekap PO UMKM - Multi-Tenant AI",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -45,18 +45,12 @@ st.markdown("""
         color: #64748B;
         margin-bottom: 24px;
     }
-    .kpi-container {
-        display: flex;
-        gap: 16px;
-        margin-bottom: 24px;
-    }
     .kpi-card {
         background: #FFFFFF;
         border: 1px solid #E2E8F0;
         border-radius: 12px;
         padding: 16px 20px;
         box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
-        flex: 1;
     }
     .kpi-title {
         font-size: 0.8rem;
@@ -71,9 +65,13 @@ st.markdown("""
         color: #0F172A;
         margin-top: 4px;
     }
-    .badge-baru { background-color: #EFF6FF; color: #1D4ED8; padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
-    .badge-selesai { background-color: #F0FDF4; color: #15803D; padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
-    .badge-proses { background-color: #FEFCE8; color: #A16207; padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
+    .order-box {
+        background: #F8FAFC;
+        border: 1px solid #CBD5E1;
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 12px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,8 +87,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.tenant = None
 
-if "extracted_order" not in st.session_state:
-    st.session_state.extracted_order = None
+if "extracted_orders" not in st.session_state:
+    st.session_state.extracted_orders = []
 
 def auth_view():
     st.markdown("<br>", unsafe_allow_html=True)
@@ -164,6 +162,13 @@ def main_dashboard():
     with st.sidebar:
         st.markdown(f"### 🏪 {tenant.nama_toko}")
         st.caption(f"ID: `{tenant.tenant_id}` | User: `{tenant.username}`")
+        
+        # Engine status
+        if config.GEMINI_API_KEY:
+            st.success("🤖 **Gemini AI Active**")
+        else:
+            st.info("⚙️ **Smart Parser Active**")
+
         st.divider()
 
         st.subheader("🔍 Filter Data")
@@ -177,21 +182,21 @@ def main_dashboard():
         if st.button("🚪 Logout / Keluar", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.tenant = None
-            st.session_state.extracted_order = None
+            st.session_state.extracted_orders = []
             st.rerun()
 
     # --- Header ---
     st.markdown(f"<div class='main-title'>Rekap Pesanan PO — {tenant.nama_toko}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='main-subtitle'>Ekstraksi otomatis chat WhatsApp pelanggan langsung ke Database Excel</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-subtitle'>Ekstraksi otomatis chat WhatsApp pelanggan (single / batch pesanan) langsung ke Database Excel</div>", unsafe_allow_html=True)
 
     # ------------------ SECTION 1: QUICK PASTE AI EXTRACTOR ------------------ #
     with st.expander("⚡ **Input Cepat Chat WhatsApp (Ekstraksi Otomatis dengan AI)**", expanded=True):
-        st.markdown("<p style='font-size:0.9rem; color:#475569;'>Tempel teks chat pesanan dari WhatsApp pembeli di bawah ini. AI Gemini akan membaca dan merapikan data pemesan, item, kuantiti, dan alamat secara otomatis.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.9rem; color:#475569;'>Tempel teks chat pesanan dari WhatsApp pembeli di bawah ini (bisa 1 pesanan atau beberapa pesanan sekaligus). Sistem akan membaca nama pemesan, nomor WA, daftar item, harga, dan alamat secara otomatis.</p>", unsafe_allow_html=True)
 
         chat_input = st.text_area(
             "Teks Chat Pesanan dari WhatsApp",
-            placeholder="Contoh:\nKak mau pesan Risol Mayo 5 pcs, Pastel Kari 3 pcs.\nAtas nama Bu Siti (08123456789), kirim ke Jl. Melati No. 12 sore ini ya.",
-            height=120,
+            placeholder="Contoh:\nNama : Alivia Shifa\nNo tlp : 081316982390\nAlamat : Jl. Melati no 5 Depok\nOrderan :\n- ayam kampung lengkuas 2\n- lele (5 ekor) 1",
+            height=140,
             key="chat_paste_box"
         )
 
@@ -203,46 +208,51 @@ def main_dashboard():
             if not chat_input.strip():
                 st.warning("Silakan tempel teks chat pesanan terlebih dahulu.")
             else:
-                with st.spinner("🤖 Gemini AI sedang membaca & mengekstrak pesanan..."):
-                    order = parse_order_chat(chat_input, contoh_format=tenant.contoh_format_po)
-                    st.session_state.extracted_order = order
+                with st.spinner("🤖 Sedang membaca & mengekstrak pesanan..."):
+                    extracted_list = parse_order_chat(chat_input, contoh_format=tenant.contoh_format_po)
+                    st.session_state.extracted_orders = extracted_list
+                    if extracted_list:
+                        st.success(f"🎯 Berhasil mendeteksi **{len(extracted_list)} pesanan**!")
+                    else:
+                        st.error("Tidak ada pesanan valid yang terdeteksi dari teks di atas.")
 
-        # Preview Result Box if Extracted
-        if st.session_state.extracted_order:
-            ext: OrderRecord = st.session_state.extracted_order
+        # Preview Result Boxes if Extracted
+        if st.session_state.extracted_orders:
+            orders_to_show = st.session_state.extracted_orders
             st.markdown("---")
-            st.markdown("#### 🎯 Hasil Ekstraksi AI (Konfirmasi Sebelum Simpan):")
-            
-            p_col1, p_col2, p_col3 = st.columns(3)
-            with p_col1:
-                st.text_input("Nama Pemesan", value=ext.nama_pemesan, key="edit_nama")
-                st.text_input("No HP / WhatsApp", value=ext.no_hp, key="edit_hp")
-            with p_col2:
-                items_summary = ", ".join([f"{it.nama_item} (x{it.qty})" for it in ext.items])
-                st.text_input("Rincian Items", value=items_summary, key="edit_items")
-                total_val = st.number_input("Total Harga (Rp)", value=float(ext.total_harga), step=1000.0, key="edit_total")
-            with p_col3:
-                st.text_area("Alamat Pengiriman", value=ext.alamat_pengiriman, height=80, key="edit_alamat")
+            st.markdown(f"#### 🎯 Hasil Ekstraksi ({len(orders_to_show)} Pesanan Terdeteksi):")
 
-            c_save1, c_save2 = st.columns([2, 5])
+            for idx, ext in enumerate(orders_to_show):
+                with st.container():
+                    st.markdown(f"**Pesanan #{idx + 1} — ID: `{ext.id_pesanan}`**")
+                    p_col1, p_col2, p_col3 = st.columns([1.2, 1.8, 1.5])
+                    with p_col1:
+                        ext.nama_pemesan = st.text_input("Nama Pemesan", value=ext.nama_pemesan, key=f"edit_nama_{idx}")
+                        ext.no_hp = st.text_input("No HP / WhatsApp", value=ext.no_hp, key=f"edit_hp_{idx}")
+                    with p_col2:
+                        items_summary = ", ".join([f"{it.nama_item} (x{it.qty})" for it in ext.items])
+                        st.text_input("Rincian Items", value=items_summary, key=f"edit_items_{idx}")
+                        ext.total_harga = st.number_input("Total Harga (Rp)", value=float(ext.total_harga), step=1000.0, key=f"edit_total_{idx}")
+                    with p_col3:
+                        ext.alamat_pengiriman = st.text_area("Alamat Pengiriman", value=ext.alamat_pengiriman, height=80, key=f"edit_alamat_{idx}")
+                    st.divider()
+
+            c_save1, c_save2 = st.columns([2.5, 5])
             with c_save1:
-                if st.button("✅ Simpan ke Database Excel", use_container_width=True, type="primary"):
-                    # Apply any user edits
-                    ext.nama_pemesan = st.session_state.get("edit_nama", ext.nama_pemesan)
-                    ext.no_hp = st.session_state.get("edit_hp", ext.no_hp)
-                    ext.total_harga = st.session_state.get("edit_total", ext.total_harga)
-                    ext.alamat_pengiriman = st.session_state.get("edit_alamat", ext.alamat_pengiriman)
-
-                    success = storage.append_order(tenant.tenant_id, ext)
-                    if success:
-                        st.success(f"🎉 Pesanan atas nama **{ext.nama_pemesan}** berhasil disimpan ke Excel!")
-                        st.session_state.extracted_order = None
+                if st.button(f"✅ Simpan Semua Pesanan ({len(orders_to_show)}) ke Excel", use_container_width=True, type="primary"):
+                    saved_count = 0
+                    for ord_item in orders_to_show:
+                        if storage.append_order(tenant.tenant_id, ord_item):
+                            saved_count += 1
+                    if saved_count > 0:
+                        st.success(f"🎉 Berhasil menyimpan {saved_count} pesanan ke database Excel!")
+                        st.session_state.extracted_orders = []
                         st.rerun()
                     else:
-                        st.error("Gagal menyimpan pesanan. Silakan coba lagi.")
+                        st.error("Gagal menyimpan pesanan.")
             with c_save2:
                 if st.button("Batal / Reset", use_container_width=False):
-                    st.session_state.extracted_order = None
+                    st.session_state.extracted_orders = []
                     st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
