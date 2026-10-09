@@ -77,37 +77,51 @@ async def order_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     status_msg = await update.message.reply_text("⏳ *Membaca dan mengekstrak rincian pesanan...*", parse_mode="Markdown")
 
     try:
-        # Extract order using AI with tenant's specific format reference
-        order: OrderRecord = parse_order_chat(chat_text, contoh_format=tenant.contoh_format_po)
+        # Extract orders using AI/Smart Engine
+        res = parse_order_chat(chat_text, contoh_format=tenant.contoh_format_po)
+        if isinstance(res, tuple) and len(res) == 2:
+            extracted_orders, engine_used = res
+        elif isinstance(res, tuple) and len(res) >= 1:
+            extracted_orders, engine_used = res[0], "AI Engine"
+        else:
+            extracted_orders, engine_used = res, "AI Engine"
 
-        # Save order to tenant's Excel in GitHub / Local Storage
-        success = storage.append_order(tenant.tenant_id, order)
+        if not isinstance(extracted_orders, list):
+            extracted_orders = [extracted_orders] if extracted_orders else []
 
-        if not success:
-            await status_msg.edit_text("❌ Gagal menyimpan pesanan ke database Excel. Silakan coba lagi.")
+        if not extracted_orders:
+            await status_msg.edit_text("⚠️ Tidak ada data pesanan yang berhasil diekstrak dari teks tersebut.")
             return
 
-        # Format items string
-        items_text = "\n".join([f"  • {item.nama_item} (x{item.qty})" + (f" - Rp {item.subtotal:,.0f}" if item.subtotal > 0 else "") for item in order.items])
+        saved_count = 0
+        cards = []
+        for order in extracted_orders:
+            if storage.append_order(tenant.tenant_id, order):
+                saved_count += 1
+                items_text = "\n".join([f"  • {item.nama_item} (x{item.qty})" + (f" - Rp {item.subtotal:,.0f}" if item.subtotal > 0 else "") for item in order.items])
+                cards.append(
+                    f"🆔 **ID**: `{order.id_pesanan}`\n"
+                    f"👤 **Pemesan**: **{order.nama_pemesan}**\n"
+                    f"📞 **No HP**: {order.no_hp or '-'}\n"
+                    f"📍 **Alamat**: {order.alamat_pengiriman or '-'}\n"
+                    f"📦 **Items**:\n{items_text}\n"
+                    f"💰 **Total**: Rp {order.total_harga:,.0f}"
+                )
 
-        confirmation_text = (
-            f"✅ **Pesanan Berhasil Direkap!**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 **ID Pesanan**: `{order.id_pesanan}`\n"
-            f"🕒 **Waktu**: {order.tanggal_masuk}\n"
-            f"👤 **Pemesan**: **{order.nama_pemesan}**\n"
-            f"📞 **No HP**: {order.no_hp or '-'}\n"
-            f"📍 **Alamat**: {order.alamat_pengiriman or '-'}\n\n"
-            f"📦 **Rincian Item**:\n{items_text}\n\n"
-            f"💰 **Total**: Rp {order.total_harga:,.0f}\n"
-            f"🏷️ **Status**: `{order.status_pesanan}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📂 Tersimpan di: `tenants/{tenant.tenant_id}/rekap_pesanan.xlsx`"
-        )
-
-        await status_msg.edit_text(confirmation_text, parse_mode="Markdown")
+        if saved_count > 0:
+            summary = (
+                f"✅ **{saved_count} Pesanan Berhasil Direkap!** ({engine_used})\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n" +
+                "\n\n━━━━━━━━━━━━━━━━━━━━━\n".join(cards) +
+                f"\n\n📂 Tersimpan di: `tenants/{tenant.tenant_id}/rekap_pesanan.xlsx`"
+            )
+            await status_msg.edit_text(summary, parse_mode="Markdown")
+        else:
+            await status_msg.edit_text("❌ Gagal menyimpan pesanan ke database Excel.")
 
     except Exception as e:
+        logger.error(f"Error processing order chat: {e}", exc_info=True)
+        await status_msg.edit_text(f"⚠️ Terjadi kendala saat memproses pesanan: {str(e)}")
         logger.error(f"Error processing order chat: {e}", exc_info=True)
         await status_msg.edit_text(f"⚠️ Terjadi kendala saat memproses pesanan: {str(e)}")
 
