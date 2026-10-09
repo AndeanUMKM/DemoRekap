@@ -221,14 +221,27 @@ def main_dashboard():
                 st.warning("Silakan tempel teks chat pesanan terlebih dahulu.")
             else:
                 with st.spinner("🤖 Sedang membaca & mengekstrak pesanan..."):
-                    extracted_list, engine_used = parse_order_chat(
+                    res = parse_order_chat(
                         chat_input,
                         api_key=effective_key,
                         contoh_format=tenant.contoh_format_po
                     )
-                    
-                    if not isinstance(extracted_list, list):
-                        extracted_list = [extracted_list] if extracted_list else []
+
+                    if isinstance(res, tuple) and len(res) == 2:
+                        extracted_raw, engine_used = res
+                    elif isinstance(res, tuple) and len(res) >= 1:
+                        extracted_raw, engine_used = res[0], "AI Extractor"
+                    else:
+                        extracted_raw, engine_used = res, "AI Extractor"
+
+                    if isinstance(extracted_raw, list):
+                        extracted_list = extracted_raw
+                    elif isinstance(extracted_raw, OrderRecord):
+                        extracted_list = [extracted_raw]
+                    elif extracted_raw:
+                        extracted_list = [extracted_raw]
+                    else:
+                        extracted_list = []
 
                     st.session_state.extracted_orders = extracted_list
                     if extracted_list:
