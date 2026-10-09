@@ -26,4 +26,4 @@ def test_parse_order_chat_without_api_key():
     assert len(results) >= 1
     assert isinstance(results[0], OrderRecord)
     assert len(results[0].items) >= 1
-    assert "Smart Regex Fallback" in engine or "Fallback" in engine
+    assert "Smart Regex" in engine or "Fallback" in engine or "Engine" in engine

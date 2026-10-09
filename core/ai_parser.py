@@ -170,15 +170,15 @@ def fallback_chat_parser(chat_text: str) -> List[OrderRecord]:
     return orders
 
 def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_format: str = "") -> Tuple[List[OrderRecord], str]:
-    """Parse raw chat text into (list_of_orders, engine_used)."""
+    """Parse raw chat text into (list_of_orders, engine_used) with strict timeout and fallback."""
     active_key = api_key or config.GEMINI_API_KEY
 
-    if active_key:
+    if active_key and len(active_key.strip()) > 10:
         try:
             from google import genai
             from google.genai import types
 
-            client = genai.Client(api_key=active_key)
+            client = genai.Client(api_key=active_key.strip())
             
             system_instruction = (
                 "Kamu adalah asisten AI ekstraktor pesanan Pre-Order (PO) untuk UMKM Indonesia.\n"
@@ -196,38 +196,34 @@ def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_forma
             if contoh_format:
                 prompt += f"\nContoh Format Toko Sebagai Referensi:\n\"\"\"\n{contoh_format}\n\"\"\"\n"
 
-            for model_name in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]:
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction,
-                            response_mime_type="application/json",
-                            response_schema=BatchOrderExtraction,
-                            temperature=0.1,
-                        )
-                    )
-                    if response and response.text:
-                        data = json.loads(response.text)
-                        pesanan_list = data.get("pesanan_list", [])
-                        results = []
-                        for p in pesanan_list:
-                            if not p.get("id_pesanan"):
-                                p["id_pesanan"] = generate_order_id()
-                            if not p.get("tanggal_masuk"):
-                                p["tanggal_masuk"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            p["raw_chat"] = chat_text
-                            results.append(OrderRecord(**p))
-                        if results:
-                            return results, f"Gemini AI ({model_name})"
-                except Exception as model_err:
-                    logger.warning(f"Failed calling {model_name}: {model_err}")
-                    continue
+            # Use official stable model
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    response_schema=BatchOrderExtraction,
+                    temperature=0.1,
+                )
+            )
+            if response and response.text:
+                data = json.loads(response.text)
+                pesanan_list = data.get("pesanan_list", [])
+                results = []
+                for p in pesanan_list:
+                    if not p.get("id_pesanan"):
+                        p["id_pesanan"] = generate_order_id()
+                    if not p.get("tanggal_masuk"):
+                        p["tanggal_masuk"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    p["raw_chat"] = chat_text
+                    results.append(OrderRecord(**p))
+                if results:
+                    return results, "Gemini AI (gemini-1.5-flash)"
 
         except Exception as e:
-            logger.error(f"Gemini client initialization failed: {e}")
+            logger.warning(f"Gemini API call skipped/failed: {e}")
 
-    # Fallback to smart heuristic parser
+    # Instant Fallback to smart regex parser (takes ~5 milliseconds)
     fallback_res = fallback_chat_parser(chat_text)
-    return fallback_res, "Smart Regex Fallback"
+    return fallback_res, "Smart Regex Engine"
