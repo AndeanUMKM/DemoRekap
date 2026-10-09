@@ -65,9 +65,9 @@ st.markdown("""
         color: #0F172A;
         margin-top: 4px;
     }
-    .order-box {
+    .order-card {
         background: #F8FAFC;
-        border: 1px solid #CBD5E1;
+        border: 1px solid #E2E8F0;
         border-radius: 10px;
         padding: 16px;
         margin-bottom: 12px;
@@ -89,6 +89,9 @@ if "authenticated" not in st.session_state:
 
 if "extracted_orders" not in st.session_state:
     st.session_state.extracted_orders = []
+
+if "custom_api_key" not in st.session_state:
+    st.session_state.custom_api_key = ""
 
 def auth_view():
     st.markdown("<br>", unsafe_allow_html=True)
@@ -158,16 +161,25 @@ def auth_view():
 def main_dashboard():
     tenant: TenantProfile = st.session_state.tenant
 
+    # Determine effective Gemini API Key
+    effective_key = st.session_state.custom_api_key or config.GEMINI_API_KEY
+
     # --- Sidebar ---
     with st.sidebar:
         st.markdown(f"### 🏪 {tenant.nama_toko}")
         st.caption(f"ID: `{tenant.tenant_id}` | User: `{tenant.username}`")
-        
+
         # Engine status
-        if config.GEMINI_API_KEY:
+        if effective_key:
             st.success("🤖 **Gemini AI Active**")
         else:
-            st.info("⚙️ **Smart Parser Active**")
+            st.warning("⚙️ **Mode Heuristic (Tanpa API Key)**")
+
+        with st.expander("🔑 Setting API Key (Opsional)"):
+            custom_key = st.text_input("Masukkan Gemini API Key", value=st.session_state.custom_api_key, type="password", placeholder="AIzaSy...").strip()
+            if st.button("Simpan Key"):
+                st.session_state.custom_api_key = custom_key
+                st.rerun()
 
         st.divider()
 
@@ -209,19 +221,18 @@ def main_dashboard():
                 st.warning("Silakan tempel teks chat pesanan terlebih dahulu.")
             else:
                 with st.spinner("🤖 Sedang membaca & mengekstrak pesanan..."):
-                    extracted_raw = parse_order_chat(chat_input, contoh_format=tenant.contoh_format_po)
-                    if isinstance(extracted_raw, list):
-                        extracted_list = extracted_raw
-                    elif isinstance(extracted_raw, OrderRecord):
-                        extracted_list = [extracted_raw]
-                    elif extracted_raw:
-                        extracted_list = [extracted_raw]
-                    else:
-                        extracted_list = []
+                    extracted_list, engine_used = parse_order_chat(
+                        chat_input,
+                        api_key=effective_key,
+                        contoh_format=tenant.contoh_format_po
+                    )
+                    
+                    if not isinstance(extracted_list, list):
+                        extracted_list = [extracted_list] if extracted_list else []
 
                     st.session_state.extracted_orders = extracted_list
                     if extracted_list:
-                        st.success(f"🎯 Berhasil mendeteksi **{len(extracted_list)} pesanan**!")
+                        st.success(f"🎯 Berhasil mendeteksi **{len(extracted_list)} pesanan** via `{engine_used}`!")
                     else:
                         st.error("Tidak ada pesanan valid yang terdeteksi dari teks di atas.")
 

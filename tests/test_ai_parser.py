@@ -21,8 +21,9 @@ def test_fallback_chat_parser():
 
 def test_parse_order_chat_without_api_key():
     # When api key is not set, it should safely use fallback
-    results = parse_order_chat(SAMPLE_CHAT_1, api_key="", contoh_format="")
+    results, engine = parse_order_chat(SAMPLE_CHAT_1, api_key="", contoh_format="")
     assert isinstance(results, list)
     assert len(results) >= 1
     assert isinstance(results[0], OrderRecord)
     assert len(results[0].items) >= 1
+    assert "Smart Regex Fallback" in engine or "Fallback" in engine

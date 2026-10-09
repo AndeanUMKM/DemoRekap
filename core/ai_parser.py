@@ -1,10 +1,13 @@
 import re
 import json
 import uuid
+import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from core.models import OrderRecord, OrderItem, BatchOrderExtraction
 from config import config
+
+logger = logging.getLogger(__name__)
 
 def generate_order_id() -> str:
     """Generate a clean readable order ID, e.g., PO-20261009-A1B2"""
@@ -22,7 +25,7 @@ def clean_phone_number(text: str) -> str:
 
 def extract_price(text: str) -> float:
     """Extract explicit price from formatted string, e.g. (55.000), Rp 55.000, 55rb, 55k"""
-    # 1. Match prices inside parentheses: (55.000) or (Rp 55.000) or (55k)
+    # Match prices inside parentheses: (55.000) or (Rp 55.000) or (55k)
     match_paren = re.search(r"\((?:rp\.?\s*)?([\d\.]+)\s*(rb|k)?\)", text, flags=re.IGNORECASE)
     if match_paren:
         raw_num = match_paren.group(1).replace(".", "")
@@ -32,7 +35,7 @@ def extract_price(text: str) -> float:
                 val *= 1000
             return val
 
-    # 2. Match prices with explicit Rp: Rp 55.000 or Rp55.000
+    # Match prices with explicit Rp: Rp 55.000 or Rp55.000
     match_rp = re.search(r"rp\.?\s*([\d\.]+)\s*(rb|k)?", text, flags=re.IGNORECASE)
     if match_rp:
         raw_num = match_rp.group(1).replace(".", "")
@@ -107,14 +110,10 @@ def parse_single_order_block(block_text: str) -> Optional[OrderRecord]:
             if not clean_line or len(clean_line) < 3 or clean_line.lower().startswith("fo "):
                 continue
 
-            # Extract price if present
             price = extract_price(clean_line)
-            
-            # Remove price brackets from text
             clean_no_price = re.sub(r"\((?:rp\.?\s*)?[\d\.]+\s*(?:rb|k)?\)", "", clean_line, flags=re.IGNORECASE)
             clean_no_price = re.sub(r"rp\.?\s*[\d\.]+\s*(?:rb|k)?", "", clean_no_price, flags=re.IGNORECASE).strip()
 
-            # Extract quantity (e.g. "ayam kampung lengkuas 2" or "ay kp songkem - 1" or "lele (5 ekor) 1")
             qty = 1
             qty_match = re.search(r"(?:^|\s*-\s*|\s+)(\d+)\s*(?:pcs|porsi|box|bungkus|buah|pack|kg|gr|x)?$", clean_no_price, flags=re.IGNORECASE)
             item_name = clean_no_price
@@ -129,7 +128,6 @@ def parse_single_order_block(block_text: str) -> Optional[OrderRecord]:
 
         # Address continuation
         if is_collecting_address:
-            # If not an item or tag
             if not line.startswith(("-", "*", "•")) and not re.search(r"^(?:orderan|pesanan|fo\b)", line_lower):
                 alamat_lines.append(line)
 
@@ -153,7 +151,6 @@ def parse_single_order_block(block_text: str) -> Optional[OrderRecord]:
 
 def fallback_chat_parser(chat_text: str) -> List[OrderRecord]:
     """Smart Heuristic / Regex parser that segments multiple orders and removes broadcast junk."""
-    # Split blocks by order markers
     order_marker_pattern = r"(?=(?:^|\n)(?:\*?FO\s+[A-Za-z0-9]+\*?|\*?Format Order|\*?Nama\s*[:=]|\*?Nama penerima\s*[:=]))"
     raw_blocks = re.split(order_marker_pattern, chat_text, flags=re.IGNORECASE)
 
@@ -165,7 +162,6 @@ def fallback_chat_parser(chat_text: str) -> List[OrderRecord]:
         if parsed and (parsed.nama_pemesan != "Pelanggan" or (len(parsed.items) > 0 and parsed.items[0].nama_item != "Pesanan PO")):
             orders.append(parsed)
 
-    # If no segmented orders, try parsing whole text
     if not orders:
         single = parse_single_order_block(chat_text)
         if single:
@@ -173,8 +169,8 @@ def fallback_chat_parser(chat_text: str) -> List[OrderRecord]:
 
     return orders
 
-def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_format: str = "") -> List[OrderRecord]:
-    """Parse raw chat text into a list of OrderRecord using Gemini AI with fallback to regex heuristics."""
+def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_format: str = "") -> Tuple[List[OrderRecord], str]:
+    """Parse raw chat text into (list_of_orders, engine_used)."""
     active_key = api_key or config.GEMINI_API_KEY
 
     if active_key:
@@ -200,9 +196,7 @@ def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_forma
             if contoh_format:
                 prompt += f"\nContoh Format Toko Sebagai Referensi:\n\"\"\"\n{contoh_format}\n\"\"\"\n"
 
-            # Try modern models
-            models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
-            for model_name in models_to_try:
+            for model_name in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]:
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -226,12 +220,14 @@ def parse_order_chat(chat_text: str, api_key: Optional[str] = None, contoh_forma
                             p["raw_chat"] = chat_text
                             results.append(OrderRecord(**p))
                         if results:
-                            return results
-                except Exception:
+                            return results, f"Gemini AI ({model_name})"
+                except Exception as model_err:
+                    logger.warning(f"Failed calling {model_name}: {model_err}")
                     continue
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Gemini client initialization failed: {e}")
 
-    # High-accuracy heuristic fallback
-    return fallback_chat_parser(chat_text)
+    # Fallback to smart heuristic parser
+    fallback_res = fallback_chat_parser(chat_text)
+    return fallback_res, "Smart Regex Fallback"
