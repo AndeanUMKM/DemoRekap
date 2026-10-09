@@ -378,7 +378,22 @@ def main_dashboard():
         st.markdown("<p style='color: #EF4444; font-size: 0.85rem;'>Gunakan fitur ini untuk membersihkan seluruh data pesanan toko ini selama masa uji coba.</p>", unsafe_allow_html=True)
         confirm_check = st.checkbox("Saya yakin ingin mengosongkan/mereset semua data pesanan", key="confirm_reset_box")
         if st.button("🚨 Hapus Semua Data Pesanan", type="secondary") and confirm_check:
-            success = storage.reset_tenant_orders(tenant.tenant_id)
+            if hasattr(storage, "reset_tenant_orders"):
+                success = storage.reset_tenant_orders(tenant.tenant_id)
+            else:
+                # Direct fallback reset
+                empty_df = pd.DataFrame(columns=EXCEL_COLUMNS)
+                buf = io.BytesIO()
+                empty_df.to_excel(buf, index=False, engine="openpyxl")
+                target = storage.local_root / "tenants" / tenant.tenant_id / "rekap_pesanan.xlsx"
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target, "wb") as f:
+                        f.write(buf.getvalue())
+                    success = True
+                except Exception:
+                    success = False
+
             if success:
                 st.session_state.extracted_orders = []
                 st.success("Semua data pesanan toko berhasil dikosongkan!")
