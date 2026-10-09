@@ -220,6 +220,11 @@ def main_dashboard():
             if not chat_input.strip():
                 st.warning("Silakan tempel teks chat pesanan terlebih dahulu.")
             else:
+                # Clear old form states so new extracted values are not overridden by Streamlit cache
+                for k in list(st.session_state.keys()):
+                    if k.startswith("edit_"):
+                        del st.session_state[k]
+
                 with st.spinner("🤖 Sedang membaca & mengekstrak pesanan..."):
                     res = parse_order_chat(
                         chat_input,
@@ -260,14 +265,14 @@ def main_dashboard():
                     st.markdown(f"**Pesanan #{idx + 1} — ID: `{ext.id_pesanan}`**")
                     p_col1, p_col2, p_col3 = st.columns([1.2, 1.8, 1.5])
                     with p_col1:
-                        ext.nama_pemesan = st.text_input("Nama Pemesan", value=ext.nama_pemesan, key=f"edit_nama_{idx}")
-                        ext.no_hp = st.text_input("No HP / WhatsApp", value=ext.no_hp, key=f"edit_hp_{idx}")
+                        ext.nama_pemesan = st.text_input("Nama Pemesan", value=ext.nama_pemesan, key=f"edit_nama_{ext.id_pesanan}")
+                        ext.no_hp = st.text_input("No HP / WhatsApp", value=ext.no_hp, key=f"edit_hp_{ext.id_pesanan}")
                     with p_col2:
                         items_summary = ", ".join([f"{it.nama_item} (x{it.qty})" for it in ext.items])
-                        st.text_input("Rincian Items", value=items_summary, key=f"edit_items_{idx}")
-                        ext.total_harga = st.number_input("Total Harga (Rp)", value=float(ext.total_harga), step=1000.0, key=f"edit_total_{idx}")
+                        st.text_input("Rincian Items", value=items_summary, key=f"edit_items_{ext.id_pesanan}")
+                        ext.total_harga = st.number_input("Total Harga (Rp)", value=float(ext.total_harga), step=1000.0, key=f"edit_total_{ext.id_pesanan}")
                     with p_col3:
-                        ext.alamat_pengiriman = st.text_area("Alamat Pengiriman", value=ext.alamat_pengiriman, height=80, key=f"edit_alamat_{idx}")
+                        ext.alamat_pengiriman = st.text_area("Alamat Pengiriman", value=ext.alamat_pengiriman, height=80, key=f"edit_alamat_{ext.id_pesanan}")
                     st.divider()
 
             c_save1, c_save2 = st.columns([2.5, 5])
