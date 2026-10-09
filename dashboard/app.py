@@ -373,6 +373,19 @@ def main_dashboard():
         use_container_width=True
     )
 
+    # Reset Data Testing Section
+    with st.expander("🗑️ **Reset Data Pesanan (Testing / Dev Mode)**"):
+        st.markdown("<p style='color: #EF4444; font-size: 0.85rem;'>Gunakan fitur ini untuk membersihkan seluruh data pesanan toko ini selama masa uji coba.</p>", unsafe_allow_html=True)
+        confirm_check = st.checkbox("Saya yakin ingin mengosongkan/mereset semua data pesanan", key="confirm_reset_box")
+        if st.button("🚨 Hapus Semua Data Pesanan", type="secondary") and confirm_check:
+            success = storage.reset_tenant_orders(tenant.tenant_id)
+            if success:
+                st.session_state.extracted_orders = []
+                st.success("Semua data pesanan toko berhasil dikosongkan!")
+                st.rerun()
+            else:
+                st.error("Gagal mengosongkan database.")
+
 # ------------------ App Router ------------------ #
 if not st.session_state.authenticated:
     auth_view()

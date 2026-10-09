@@ -273,5 +273,32 @@ class StorageEngine:
                     return False
         return False
 
+    def reset_tenant_orders(self, tenant_id: str) -> bool:
+        """Reset and clear all order rows for a tenant (reinitialize empty excel)."""
+        empty_df = pd.DataFrame(columns=EXCEL_COLUMNS)
+        excel_buffer = io.BytesIO()
+        empty_df.to_excel(excel_buffer, index=False, engine="openpyxl")
+        excel_bytes = excel_buffer.getvalue()
+
+        excel_path = f"tenants/{tenant_id}/rekap_pesanan.xlsx"
+        if self.use_local:
+            target = self.local_root / "tenants" / tenant_id / "rekap_pesanan.xlsx"
+            with open(target, "wb") as f:
+                f.write(excel_bytes)
+            return True
+        else:
+            try:
+                c = self.github_repo.get_contents(excel_path, ref=config.GITHUB_BRANCH)
+                self.github_repo.update_file(
+                    excel_path,
+                    f"Reset order database for {tenant_id}",
+                    excel_bytes,
+                    c.sha,
+                    branch=config.GITHUB_BRANCH
+                )
+                return True
+            except Exception:
+                return False
+
 # Global storage engine instance
 storage = StorageEngine()
